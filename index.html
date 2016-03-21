@@ -1,0 +1,321 @@
+<html>
+<style>
+table {
+    border-collapse: collapse;
+}
+table, td, th {
+    border: 1px solid grey;
+}
+</style>
+<head>
+    <script type="text/javascript">
+        // Your Client ID can be retrieved from your project in the Google
+        // Developer Console, https://console.developers.google.com
+        var CLIENT_ID = '603011177315-em5p8j25do0db359ejvvvj2049u7ueet.apps.googleusercontent.com';
+
+        var SCOPES = ['https://www.googleapis.com/auth/gmail.readonly'];
+
+        var email_dict = {}
+        /**
+         * Check if current user has authorized this application.
+         */
+        function checkAuth() {
+            gapi.auth.authorize({
+                'client_id': CLIENT_ID,
+                'scope': SCOPES.join(' '),
+                'immediate': true
+            }, handleAuthResult);
+        }
+
+        /**
+         * Handle response from authorization server.
+         *
+         * @param {Object} authResult Authorization result.
+         */
+        function handleAuthResult(authResult) {
+            var authorizeDiv = document.getElementById('authorize-message-div');
+            if (authResult && !authResult.error) {
+                // Hide auth UI, then load client library.
+                authorizeDiv.style.display = 'none';
+                loadGmailApi();
+            }
+            else {
+                // Show auth UI
+                authorizeDiv.style.display = 'inline';
+            }
+        }
+
+        /**
+         * Initiate auth flow in response to user clicking authorize button.
+         *
+         * @param {Event} event Button click event.
+         */
+        function handleAuthClick(event) {
+            gapi.auth.authorize({
+                    client_id: CLIENT_ID,
+                    scope: SCOPES,
+                    immediate: false
+                },
+                handleAuthResult);
+            return false;
+        }
+
+        /**
+         * Load Gmail API client library. List labels once client library
+         * is loaded.
+         */
+        function loadGmailApi() {
+            gapi.client.load('gmail', 'v1', null);
+        }
+
+        function newRegex(event) {
+            var regex_list = document.getElementById("regex-list");
+            var span = document.createElement("span")
+            
+            var input = document.createElement("input");
+            input.type = "text";
+            input.name = "regex";
+            input.style = "width: calc(90%)";
+            span.appendChild(input)
+            
+            var button = document.createElement("BUTTON");
+            button.appendChild(document.createTextNode("X"));
+            button.onclick = function(event) {removePrecedingInputText(event);}
+            span.appendChild(button)
+            
+            regex_list.appendChild(span);
+        }
+
+        function removePrecedingInputText(event) {
+            var regex_list = document.getElementById("regex-list");
+            regex_list.removeChild(event.currentTarget.parentElement);
+            return false;
+        }
+
+        function handleSearchClick(event) {
+            var table = document.getElementById("search-result-table");
+            table.innerHTML = "";
+            var row = table.insertRow(0);
+            row.insertCell(0).innerHTML = "<b>From/Date</b>";
+            row.insertCell(1).innerHTML = "<b>Subject/Snippet</b>";
+            var regex_list = document.getElementsByName("regex");
+            for (var i = 0; i < regex_list.length; ++i) {
+                var regex = regex_list[i].value.trim();
+                var cell = row.insertCell(i + 2);
+                cell.style.fontSize = "80%";
+                cell.innerHTML = regex;
+            }
+            getEmailsWithQuery(document.getElementById('query-text').value, null);
+            return false
+        }
+        
+        function getEmailsWithQuery(query, next_page_token) {
+            var query = document.getElementById('query-text').value;
+            var param = {
+                'userId': 'me',
+                'maxResults': 20,
+                'q': query,
+                'pageToken': next_page_token,
+            };
+            gapi.client.gmail.users.messages.list(param).execute(function(resp) {
+                var messages = resp.messages;
+                ParseAndShow(messages);
+                var search_more_button = document.getElementById("search-more-button");
+                if (resp.nextPageToken) {
+                  search_more_button.onclick = function() {getEmailsWithQuery(query, resp.nextPageToken);}
+                  search_more_button.style.display = "inline";
+                } else {
+                  search_more_button.style.display = "none";  
+                }
+            });
+        }
+        
+        function GetValueByKey(array, key_name, key_content, value_name) {
+            for (var i = 0; i < array.length; ++i) {
+                if (array[i][key_name] == key_content) {
+                    return array[i][value_name];
+                }
+            }
+            return null;
+        }
+        
+        function GetValue(array, key_content) {
+            return GetValueByKey(array, "name", key_content, "value");
+        }
+        
+        function GetEmailBody(payload, mime_type) {
+            if (mime_type) {
+                if (payload.mimeType == mime_type) {
+                    return payload.body.data;
+                }
+            } else {
+                if (payload.mimeType.lastIndexOf("text/", 0) == 0) {
+                    return payload.body.data;
+                }
+            }
+            
+            if (payload.parts) {
+                for (var i = 0; i < payload.parts.length; ++i) {
+                    var data = GetEmailBody(payload.parts[i], mime_type);
+                    if (data != null) {
+                        return data;
+                    }
+                }
+            }
+            return null;
+        }
+        
+        function Decode(str) {
+            return window.atob(str.replace(/-/g, '+').replace(/_/g, '/'));
+        }
+        
+        function OpenMail(email_id) {
+            var email = email_dict[email_id];
+            var new_window = window.open("", email_id);
+            new_window.document.innerHTML = "";
+            new_window.document.write(Decode(email.content));
+        }
+        
+        var tagsToReplace = {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;'
+        };
+
+        function replaceTag(tag) {
+            return tagsToReplace[tag] || tag;
+        }
+
+        function safe_tags_replace(str) {
+            return str.replace(/[&<>]/g, replaceTag);
+        }
+        
+        function OpenMailSource(email_id) {
+            var email = email_dict[email_id];
+            var new_window = window.open("", email_id + ".txt");
+            new_window.document.innerHTML = "";
+            new_window.document.write(safe_tags_replace(Decode(email.content)));
+        }
+        
+        function Match(regex, str) {
+            result_string = "";
+            match_dict = {}
+            /*count = 0;
+            max_match = 10
+            while ((result = regex.exec(str)) != null)  {
+                count += 1
+                if (count == max_match + 1) {
+                    result_string += " ...";
+                }
+                if (count <= max_match) {
+                    if (result_string.length > 0) result_string += ",";
+                    result_string += result[1];
+                }
+            }
+            if (count > max_match) {
+                result_string += "(" + count + " matches)";
+            }*/
+            while ((result = regex.exec(str)) != null)  {
+                if (match_dict[result[1]] > 0) {
+                    match_dict[result[1]] += 1;
+                } else {
+                    match_dict[result[1]] = 1;
+                }
+            }
+            for (match_str in match_dict) {
+                if (result_string.length > 0) {
+                    result_string += ",";
+                }
+                result_string += match_str;
+            }
+            return result_string;
+        }
+        
+        function ParseAndShow(messages) {
+            if (messages == null) return;
+            var result_table = document.getElementById("search-result-table");
+            for (var i = 0; i < messages.length; ++i) {
+                var message = messages[i];
+                var row = result_table.insertRow(result_table.rows.length);
+                row.style.fontSize = "80%";
+                var request = gapi.client.gmail.users.messages.get({
+                    'userId': 'me',
+                    'id': message.id,
+                }).execute(function(row, message, resp) {
+                    email = {}
+                    email.id = message.id;
+                    email.title = GetValue(resp.payload.headers, "Subject");
+                    email.from = GetValue(resp.payload.headers, "From") 
+                    email.date = GetValue(resp.payload.headers, "Date")
+                    email.snippet = resp.snippet;
+                    email.content = GetEmailBody(resp.payload, "text/html");
+                    email.text_content = GetEmailBody(resp.payload, "text/plain");
+                    if (!email.content) {
+                        email.content = GetEmailBody(resp.payload, null);
+                    }
+                    email_dict[message.id] = email;
+                    
+                    column_indx = 0
+                    
+                    // row.insertCell(column_indx).innerHTML = message.id;
+                    //column_indx += 1;
+                    row.insertCell(column_indx).innerHTML =
+                        "<b>" + email.from + "</b><br>" + email.date;
+                    column_indx += 1;
+                    row.insertCell(column_indx).innerHTML = 
+                        "<b><a href='javascript:OpenMail(\"" + email.id + "\");'>" +
+                        email.title + "</a></b> <a href='javascript:OpenMailSource(\"" + email.id + "\");'>[source]</a><br>" + resp.snippet;
+                    column_indx += 1;
+                    var regex_list = document.getElementsByName("regex");
+                    var decoded_content = null;
+                    for (var i = 0; i < regex_list.length; ++i) {
+                        var regex_str = regex_list[i].value.trim();
+                        if (regex_str.length > 0) {
+                            if (!decoded_content) decoded_content = Decode(email.content);
+                            row.insertCell(column_indx).innerHTML = 
+                                safe_tags_replace(Match(new RegExp(regex_str, "g"), decoded_content));
+                        } else {
+                            row.insertCell(column_indx);
+                        }
+                        column_indx += 1;
+                    }
+                }.bind(null, row, message));
+            }
+        }
+    </script>
+    <script src="https://apis.google.com/js/client.js?onload=checkAuth">
+    </script>
+</head>
+
+<body>
+<div style="margin: 1em">
+    <div id="authorize-message-div" style="display: none">
+        <p style="color: red">Not authorized.
+            <button id="authorize-button" onclick="handleAuthClick(event)">Authorize</button>
+        </p>
+    </div>
+    Search:</br>
+    <input type="text" id="query-text" value='lenovo "Your Lenovo order has been shipped!"' style="width: calc(30%); height:2em" />
+    <button id="search-button" onclick="handleSearchClick(event)" style="height:2em">Search</button>
+    <div style="margin-top: 1em">
+        Regular Expressions:</br>
+        <div id="regex-list" style="width: calc(34%)">
+            <span>
+            <input type="text" name="regex" value='(?:trackNums=)([A-Z0-9]+)' style="width: calc(90%)" /><button onclick="removePrecedingInputText(event)" />X</button>
+            </span>
+            <span>
+            <input type="text" name="regex" value='(?:orderNumber=)([A-Za-z0-9]+)' style="width: calc(90%)" /><button onclick="removePrecedingInputText(event)" />X</button>
+            </span>
+        </div>
+        <button id="new-regex-button" onclick="newRegex(event)">New</button>
+    </div>
+    <div id="search-result-div" style="margin-top: 1em">
+        Results:
+        <table id="search-result-table" style="margin: 10px">
+        </table>
+        <button id="search-more-button" style="display: none;height: 2em">More</button>
+    </div>
+</div>
+</body>
+
+</html>
